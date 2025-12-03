@@ -44,7 +44,7 @@ def test_component_uri() -> None:
         _ = m2.component.x
 
     # Later, your own code can resolve it
-    m2.component.resolve(ComponentModel(x=1, y=2))
+    m2.component.component_proxy_resolve(ComponentModel(x=1, y=2))
     assert m2.component.x == 1  # works via proxy
 
 
@@ -68,17 +68,14 @@ def test_component_serialize() -> None:
     )
     assert isinstance(m2.component, ComponentUriProxy)
     assert m2.component.uri == "component://foo"
-    # print(SomeModel.model_json_schema())
-    # print(m2.model_dump())
 
     # Using it before resolution raises
     with pytest.raises(NotResolvedError):
         _ = m2.component.x
 
     # Later, your own code can resolve it
-    m2.component.resolve(ComponentModel(x=1, y=2))
+    m2.component.component_proxy_resolve(ComponentModel(x=1, y=2))
     assert m2.component.x == 1  # works via proxy
-    # print(m2.model_dump())
 
 
 async def test_registry() -> None:

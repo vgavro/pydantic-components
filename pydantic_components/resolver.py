@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Any
 
-from pydantic import GetCoreSchemaHandler, ValidationInfo
+from pydantic import GetCoreSchemaHandler, SerializationInfo, ValidationInfo
 from pydantic_core import CoreSchema, core_schema
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ class ComponentUriProxy[ComponentT: "BaseComponent"]:
         self._component_type = component_type
         self._component: ComponentT | None = None
 
-    def resolve(self, component: ComponentT) -> None:
+    def component_proxy_resolve(self, component: ComponentT) -> None:
         """Attach the real component to this proxy."""
         if not isinstance(component, self._component_type):
             raise TypeError(
@@ -41,8 +41,7 @@ class ComponentUriProxy[ComponentT: "BaseComponent"]:
 
     def __getattr__(self, name: str) -> Any:
         # normal attribute access is delegated to the wrapped component
-        # (except for 'uri' and private attributes)
-        if name in {"uri", "_component"}:
+        if name in self.__slots__:
             raise AttributeError(name)
         component = self._component
         if component is None:
@@ -65,7 +64,7 @@ class ComponentUriProxy[ComponentT: "BaseComponent"]:
 class ComponentResolutionContext[RegistryT: "Registry", ComponentT: "BaseComponent"]:
     registry: RegistryT
     context: "ValidationContext"
-    resolved: dict[str, ComponentT]
+    resolved: dict[str, ComponentUriProxy[ComponentT]]
     unresolved: dict[str, ComponentUriProxy[ComponentT]]
 
     def __init__(
@@ -94,19 +93,24 @@ class ComponentResolutionContext[RegistryT: "Registry", ComponentT: "BaseCompone
         self,
         uri: str,
         component_type: type[ComponentT],
-    ) -> ComponentT | ComponentUriProxy:
+    ) -> ComponentUriProxy:
         if uri in self.resolved:
+            # TODO: check component_type,
+            # raise error when we're move this to errors module
             return self.resolved[uri]
         if uri not in self.unresolved:
             self.unresolved[uri] = ComponentUriProxy(uri, component_type)
         return self.unresolved[uri]
 
     async def _resolve_uri(self, uri: str) -> None:
-        self.resolved[uri] = await self.registry.get_component(
+        proxy = self.unresolved[uri]
+        component = await self.registry.get_component(
             uri,
             context=self.full_context,
         )
-        self.unresolved[uri].resolve(self.resolved[uri])
+        proxy.component_proxy_resolve(component)
+        self.resolved[uri] = proxy
+        # .resolve(self.resolved[uri])
         del self.unresolved[uri]
 
     @property
@@ -135,7 +139,7 @@ class ComponentUri:
     Validation behaviour:
 
     - If input is a dict/object: validate as `ComponentModel` (normal behaviour).
-    - If input is a str: return `ComponentProxy` containing that URI.
+    - If input is a str: return `ComponentUriProxy` containing that URI to resolve later
     """
 
     def __get_pydantic_core_schema__(
@@ -146,7 +150,7 @@ class ComponentUri:
         # Base schema for the original type (e.g. ComponentModel)
         base_schema = handler(source_type)
 
-        def create_component_or_proxy(
+        def create_component_uri_proxy(
             value: str,
             info: ValidationInfo["ValidationContext"],
         ) -> ComponentUriProxy[Any]:
@@ -161,11 +165,25 @@ class ComponentUri:
                 )
             raise RuntimeError("ComponentResolutionContext not provided")
             # return ComponentUriProxy(value)
+            #
+
+        def serialize(
+            value: ComponentUriProxy[Any],
+            info: SerializationInfo,
+        ) -> str:
+            _ = info
+            return value.uri
 
         uri_schema = core_schema.with_info_after_validator_function(
-            create_component_or_proxy,
+            create_component_uri_proxy,
             core_schema.str_schema(),
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                serialize,
+                info_arg=True,  # pass SerializationInfo
+                return_schema=core_schema.any_schema(),  # result can be str or dict
+            ),
         )
+
         return core_schema.union_schema(
             [uri_schema, base_schema],
         )
