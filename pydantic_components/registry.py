@@ -6,6 +6,7 @@ from pydantic import PrivateAttr
 from .component import BaseComponent
 from .provider import BaseProvider, ValidationContext
 from .resolver import ComponentResolutionContext
+from .utils import RecursionGuard
 
 __version__ = "0.0.1"
 
@@ -22,13 +23,24 @@ class Registry[ProviderT: BaseProvider, ComponentT: BaseComponent](
             await self._resolve_provider(provider)
         return self
 
-    async def _resolve_provider(self, provider: ProviderT) -> None:
-        # TODO: provides type dynamically for recursive provider check
-        # assert provider.provides_type, "`provides_type` unresolved on `{provider}`"
+    async def _resolve_provider(
+        self,
+        provider: ProviderT,
+        *,
+        _recursion_guard: RecursionGuard | None = None,
+    ) -> None:
+        _recursion_guard = _recursion_guard or RecursionGuard(
+            "Maximum provider resolution recursion exceeded",
+            5,
+        )
+        _recursion_guard.increment()
         await provider.__aenter__()
         if issubclass(provider.provides_type, BaseProvider):
             async for sub_provider in provider.list():
-                await self._resolve_provider(sub_provider)
+                await self._resolve_provider(
+                    sub_provider,
+                    _recursion_guard=_recursion_guard.copy(),
+                )
         self._resolved_providers.append(provider)
 
     async def __aexit__(self, *exc_args: Any) -> bool | None:
@@ -61,6 +73,7 @@ class Registry[ProviderT: BaseProvider, ComponentT: BaseComponent](
 
         raise RuntimeError("Provider not registered for Uri", uri)
 
+    # TODO: move all resolution related methods to context
     async def resolve_component(
         self,
         uri: str,

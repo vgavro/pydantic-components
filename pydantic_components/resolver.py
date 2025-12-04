@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING, Any
 from pydantic import GetCoreSchemaHandler, SerializationInfo, ValidationInfo
 from pydantic_core import CoreSchema, core_schema
 
+from .utils import RecursionGuard
+
 if TYPE_CHECKING:
     from .component import BaseComponent
     from .provider import ValidationContext
@@ -118,14 +120,11 @@ class ComponentResolutionContext[RegistryT: "Registry", ComponentT: "BaseCompone
         return {"component_resolution": self, **self.context}
 
     async def resolve(self) -> None:
-        recursion_limit = 10
-        recursion_count = 0
+        recursion_guard = RecursionGuard("Component resolution recursion exceeded", 10)
         while self.unresolved:
-            if recursion_count > recursion_limit:
-                raise RecursionError("Resolution recursion limit exceeded")
+            recursion_guard.increment()
             for uri in self.unresolved.copy():
                 await self._resolve_uri(uri)
-            recursion_count += 1
 
 
 class ComponentUri:
