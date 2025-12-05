@@ -1,31 +1,45 @@
-from collections.abc import Iterable
-from typing import Any, Self
+from collections.abc import Mapping
+from functools import cached_property
+from typing import Any, Self, cast
 
-from pydantic import PrivateAttr
+from pydantic import Field, PrivateAttr
 
 from .component import BaseComponent
 from .provider import BaseProvider, ValidationContext
-from .resolver import ComponentResolutionContext
+from .resolver import ComponentContext
 from .utils import RecursionGuard
 
 __version__ = "0.0.1"
 
 
-class Registry[ProviderT: BaseProvider, ComponentT: BaseComponent](
-    BaseProvider[ProviderT],
+class ComponentRegistry[ComponentT: BaseComponent](
+    BaseProvider[ComponentT],
     frozen=True,
 ):
-    providers: list[ProviderT]
-    _resolved_providers: list[ProviderT] = PrivateAttr([])
+    components: list[ComponentT] = Field([])
+    validation_context: Mapping[str, Any] = Field({})
+    _providers: list[BaseProvider[ComponentT]] = PrivateAttr([])
+
+    @cached_property
+    def root_context(self) -> ComponentContext[Self, ComponentT]:
+        return ComponentContext(
+            self,
+            None,
+            cast("ValidationContext", self.validation_context),
+        )
 
     async def __aenter__(self) -> Self:
-        for provider in self.providers:
-            await self._resolve_provider(provider)
+        for component in self.components:
+            self.root_context._load_component(component)  # noqa: SLF001
+        await self.root_context.__aenter__()
+        for component in self.components:
+            if isinstance(component, BaseProvider):
+                await self._resolve_provider(component)
         return self
 
     async def _resolve_provider(
         self,
-        provider: ProviderT,
+        provider: BaseProvider[ComponentT],
         *,
         _recursion_guard: RecursionGuard | None = None,
     ) -> None:
@@ -38,27 +52,23 @@ class Registry[ProviderT: BaseProvider, ComponentT: BaseComponent](
         if issubclass(provider.provides_type, BaseProvider):
             async for sub_provider in provider.list():
                 await self._resolve_provider(
-                    sub_provider,
+                    cast("BaseProvider[ComponentT]", sub_provider),
                     _recursion_guard=_recursion_guard.copy(),
                 )
-        self._resolved_providers.append(provider)
+        self._providers.append(provider)
 
-    async def __aexit__(self, *exc_args: Any) -> bool | None:
-        for provider in self._resolved_providers:
+    async def __aexit__(self, *exc_args: object) -> bool | None:
+        for provider in self._providers:
             await provider.__aexit__(*exc_args)
         return None
 
     def provides_uri(self, uri: str) -> bool:
-        return any(p.uri == uri for p in self._resolved_providers)
+        return (
+            uri in self.root_context._resolved  # noqa: SLF001
+            or any(p.provides_uri(uri) for p in self._providers)
+        )
 
-    async def list_cursor(
-        self,
-        cursor: str | None = None,
-    ) -> tuple[Iterable[ProviderT], str | None]:
-        assert not cursor
-        return self._resolved_providers, None
-
-    async def get_component(
+    async def get(
         self,
         uri: str,
         context: ValidationContext | None = None,
@@ -67,19 +77,11 @@ class Registry[ProviderT: BaseProvider, ComponentT: BaseComponent](
         # if self.provides_uri(uri):
         #     return await self.get(uri, context)
 
-        for provider in self._resolved_providers:
+        if uri in self.root_context._resolved:  # noqa: SLF001
+            return self.root_context._resolved[uri]  # noqa: SLF001
+
+        for provider in self._providers:
             if provider.provides_uri(uri):
                 return await provider.get(uri, context)
 
-        raise RuntimeError("Provider not registered for Uri", uri)
-
-    # TODO: move all resolution related methods to context
-    async def resolve_component(
-        self,
-        uri: str,
-        context: ValidationContext | None = None,
-    ) -> ComponentT:
-        component_resolution = ComponentResolutionContext(self, context)
-        component = await self.get_component(uri, component_resolution.full_context)
-        await component_resolution.resolve()
-        return component
+        raise RuntimeError("Provider not registered for URI", uri)

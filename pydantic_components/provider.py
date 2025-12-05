@@ -1,14 +1,18 @@
 from collections.abc import AsyncIterable, Iterable
-from typing import Any, ClassVar, NotRequired, Self, TypedDict
+from functools import cached_property
+from typing import TYPE_CHECKING, Any, ClassVar, NotRequired, Self, TypedDict
 
+from pydantic import TypeAdapter
 from pydantic._internal import _generics as pydantic_generics
 
 from .component import BaseComponent
-from .resolver import ComponentResolutionContext
+
+if TYPE_CHECKING:
+    from .resolver import ComponentContext
 
 
 class ValidationContext(TypedDict, total=False):
-    component_resolution: NotRequired[ComponentResolutionContext]
+    component_context: NotRequired["ComponentContext"]
 
 
 class ComponentNotFoundError(Exception): ...
@@ -17,7 +21,7 @@ class ComponentNotFoundError(Exception): ...
 class BaseProvider[ComponentT: BaseComponent](BaseComponent, frozen=True):
     # ComponentT can't be used with type[] for whatever reason,
     # so using BaseComponent here
-    provides_type: ClassVar[type[BaseComponent]]
+    provides_type: ClassVar[type[ComponentT]]  # type: ignore[reportGeneralTypeIssues]
 
     def provides_uri(self, uri: str) -> bool:
         _ = uri
@@ -35,6 +39,10 @@ class BaseProvider[ComponentT: BaseComponent](BaseComponent, frozen=True):
         provides_type = cls.__resolve_provides_type()
         if provides_type:
             cls.provides_type = provides_type
+
+    @cached_property
+    def provides_type_adapter(self) -> TypeAdapter[ComponentT]:
+        return TypeAdapter(self.provides_type)
 
     async def __aenter__(self) -> Self:
         return self

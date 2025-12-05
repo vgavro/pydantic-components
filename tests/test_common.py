@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from pydantic_components.registry import (
     BaseComponent,
     BaseProvider,
-    Registry,
+    ComponentRegistry,
 )
 from pydantic_components.resolver import (
     ComponentUri,
@@ -34,7 +34,7 @@ def test_component_uri() -> None:
     # string -> proxy
     m2 = SomeModel.model_validate(
         {"component": "component://foo"},
-        context={"component_resolution": None},
+        context={"component_context": None},
     )
     assert isinstance(m2.component, ComponentUriProxy)
     assert m2.component.uri == "component://foo"
@@ -44,7 +44,7 @@ def test_component_uri() -> None:
         _ = m2.component.x
 
     # Later, your own code can resolve it
-    m2.component.component_proxy_resolve(ComponentModel(x=1, y=2))
+    m2.component._resolve(ComponentModel(x=1, y=2))  # noqa: SLF001
     assert m2.component.x == 1  # works via proxy
 
 
@@ -64,7 +64,7 @@ def test_component_serialize() -> None:
     # string -> proxy
     m2 = SomeModel.model_validate(
         {"component": "component://foo"},
-        context={"component_resolution": None},
+        context={"component_context": None},
     )
     assert isinstance(m2.component, ComponentUriProxy)
     assert m2.component.uri == "component://foo"
@@ -74,7 +74,7 @@ def test_component_serialize() -> None:
         _ = m2.component.x
 
     # Later, your own code can resolve it
-    m2.component.component_proxy_resolve(ComponentModel(x=1, y=2))
+    m2.component._resolve(ComponentModel(x=1, y=2))  # noqa: SLF001
     assert m2.component.x == 1  # works via proxy
 
 
@@ -121,13 +121,14 @@ async def test_registry() -> None:
                 context=context,
             )
 
-    registry = Registry[Test1Provider | Test2Provider, Test1Component | Test2Component](
-        providers=[Test1Provider(), Test2Provider()],
+    registry = ComponentRegistry[Test1Provider | Test2Provider](
+        components=[Test1Provider(), Test2Provider()],
+        validation_context={},
     )
     await registry.__aenter__()
     test2_component = cast(
         "Test2Component",
-        await registry.resolve_component("test2/1"),
+        await registry.root_context.resolve("test2/1"),
     )
     assert test2_component.test1_component.uri == "test1/1"
     assert test2_component.test1_component.test1_value == 1
@@ -178,12 +179,15 @@ async def test_wrong_type_resolved() -> None:
                 context=context,
             )
 
-    registry = Registry[Test1Provider | Test2Provider, Test1Component | Test2Component](
-        providers=[Test1Provider(), Test2Provider()],
+    registry = ComponentRegistry[
+        Test1Provider | Test2Provider | Test1Component | Test2Component
+    ](
+        components=[Test1Provider(), Test2Provider()],
+        validation_context={},
     )
     await registry.__aenter__()
     with pytest.raises(TypeError):
-        await registry.resolve_component("test2/1")
+        await registry.root_context.resolve("test2/1")
 
 
 async def test_deps_excluded() -> None:
@@ -235,10 +239,13 @@ async def test_deps_excluded() -> None:
                 context=context,
             )
 
-    registry = Registry[Test1Provider | Test2Provider, Test1Component | Test2Component](
-        providers=[Test1Provider(), Test2Provider()],
+    registry = ComponentRegistry[
+        Test1Provider | Test2Provider | Test1Component | Test2Component
+    ](
+        components=[Test1Provider(), Test2Provider()],
+        validation_context={},
     )
     await registry.__aenter__()
-    test1 = cast("Test1Component", await registry.resolve_component("test1/1"))
+    test1 = cast("Test1Component", await registry.root_context.resolve("test1/1"))
     assert test1.test2_component.uri == "test2/1"
     assert test1.test2_component.test2_value == 1
