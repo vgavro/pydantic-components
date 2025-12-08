@@ -32,8 +32,9 @@ class BaseProvider[ComponentT: BaseComponent](BaseComponent, frozen=True):
             return base_args[0]
         return None
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
         provides_type = cls.__resolve_provides_type()
         if provides_type:
             cls.provides_type = provides_type
@@ -79,3 +80,47 @@ class BaseProvider[ComponentT: BaseComponent](BaseComponent, frozen=True):
     ) -> tuple[Iterable[ComponentT], str | None]:
         _, _ = cursor, context
         return [], None
+
+
+class RegistryProvider[ComponentT: BaseComponent](
+    BaseProvider[ComponentT],
+    frozen=True,
+):
+    components: list[ComponentT]
+
+    def __init__(self, components: list[object], **kwargs: object) -> None:
+        super().__init__(components=components, **kwargs)  # type: ignore[reportIncompatibleVariableOverride]
+
+    @cached_property
+    def components_map(self) -> dict[str, ComponentT]:
+        return {c.uri: c for c in self.components}
+
+    def provides_uri(self, uri: str) -> bool:
+        return uri in self.components_map
+
+    async def get(
+        self,
+        uri: str,
+        context: ValidationContext | None = None,
+    ) -> ComponentT:
+        if not self.provides_uri(uri):
+            raise ComponentNotFoundError(uri, "Component not found")
+        # NOTE: for components with ComponentUri we need
+        # to re-validate model with registry context,
+        # te solve this we may either:
+        # * force it with model_dump/model_validate here
+        # * use `class Model(BaseModel, revalidate_instances='always')`
+        #   https://docs.pydantic.dev/2.1/usage/model_config/#revalidate-instances
+        # * accept raw objects to validate later in `components` on initialzation
+        return self.components_map[uri].model_validate(
+            self.components_map[uri],
+            context=context,
+        )
+
+    async def list_cursored(
+        self,
+        cursor: str | None = None,
+        context: ValidationContext | None = None,
+    ) -> tuple[Iterable[ComponentT], str | None]:
+        _, _ = cursor, context
+        return [c.model_validate(c, context=context) for c in self.components], None

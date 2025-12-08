@@ -10,8 +10,6 @@ from .provider import BaseProvider, ValidationContext
 from .resolver import ComponentContext
 from .utils import RecursionGuard
 
-__version__ = "0.0.1"
-
 
 class ComponentRegistry[ComponentT: BaseComponent](
     BaseProvider[ComponentT],

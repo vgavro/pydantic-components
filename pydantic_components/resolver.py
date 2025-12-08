@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from .registry import ComponentRegistry
 
 
-class ComponentUriProxy[ComponentT: "BaseComponent"]:
+class ComponentUriProxy[ComponentT: "BaseComponent"](str):
     """
     Proxy object that is created when a field is given as a URI string
     instead of an actual component instance.
@@ -25,6 +25,11 @@ class ComponentUriProxy[ComponentT: "BaseComponent"]:
     """
 
     __slots__ = ("_component", "_component_type", "uri")
+
+    def __new__(cls, uri: str, component_type: type[ComponentT]) -> Self:
+        obj = super().__new__(cls, uri)
+        obj._component_type = component_type
+        return obj
 
     def __init__(self, uri: str, component_type: type[ComponentT]) -> None:
         self.uri = uri
@@ -219,17 +224,11 @@ class ComponentUri:
             info: ValidationInfo["ValidationContext"],
         ) -> ComponentUriProxy[Any]:
             if info.context and "component_context" in info.context:
-                if info.context["component_context"] is None:
-                    # TODO: explicitly do not resolve.
-                    # Where we need this except tests??
-                    return ComponentUriProxy[source_type](value, source_type)
                 return info.context["component_context"]._get_or_create_proxy(  # noqa: SLF001
                     value,
                     source_type,
                 )
-            raise ComponentRuntimeError("ComponentContext not provided")
-            # return ComponentUriProxy(value)
-            #
+            return ComponentUriProxy[source_type](value, source_type)
 
         def serialize(
             value: ComponentUriProxy[Any],
