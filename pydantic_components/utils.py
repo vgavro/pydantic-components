@@ -4,11 +4,10 @@ class RecursionGuard:
         self.limit = limit
         self.current = current
 
-    def increment(self) -> int:
+    def increment(self) -> None:
         self.current += 1
         if self.current > self.limit:
             raise RecursionError(self.message, self.limit)
-        return self.current
 
     def copy(self) -> "RecursionGuard":
         return RecursionGuard(self.message, self.limit, self.current)

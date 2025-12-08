@@ -3,16 +3,16 @@ from typing import TYPE_CHECKING, Any, Self
 from pydantic import GetCoreSchemaHandler, SerializationInfo, ValidationInfo
 from pydantic_core import CoreSchema, core_schema
 
+from .exceptions import (
+    ComponentRuntimeError,
+    ComponentTypeError,
+)
 from .utils import RecursionGuard
 
 if TYPE_CHECKING:
     from .component import BaseComponent
     from .provider import ValidationContext
     from .registry import ComponentRegistry
-
-
-class NotResolvedError(RuntimeError):
-    """Raised when trying to use a ComponentProxy whose component is not resolved."""
 
 
 class ComponentUriProxy[ComponentT: "BaseComponent"]:
@@ -34,10 +34,11 @@ class ComponentUriProxy[ComponentT: "BaseComponent"]:
     def _resolve(self, component: ComponentT) -> None:
         """Attach the real component to this proxy."""
         if not isinstance(component, self._component_type):
-            raise TypeError(
-                "Component wrong instance provided",
+            raise ComponentTypeError(
+                self.uri,
+                "Component resolved type and expected type mismatch",
+                type(component),
                 self._component_type,
-                component.__class__,
             )
         self._component = component
 
@@ -47,8 +48,10 @@ class ComponentUriProxy[ComponentT: "BaseComponent"]:
             raise AttributeError(name)
         component = self._component
         if component is None:
-            raise NotResolvedError(
-                f"Component for URI {self.uri!r} has not been resolved",
+            raise ComponentRuntimeError(
+                "Component used before resolved",
+                self.uri,
+                self._component_type,
             )
         return getattr(component, name)
 
@@ -87,9 +90,13 @@ class ComponentContext[RegistryT: "ComponentRegistry", ComponentT: "BaseComponen
         self._unresolved = {}
 
     @property
-    def _all_resolved(self) -> dict[str, ComponentT]:
+    def _resolved_with_parents(self) -> dict[str, ComponentT]:
         return {
-            **(self._parent_context._all_resolved if self._parent_context else {}),  # noqa:SLF001
+            **(
+                self._parent_context._resolved_with_parents  # noqa:SLF001
+                if self._parent_context
+                else {}
+            ),
             **self._resolved,
         }
 
@@ -98,40 +105,46 @@ class ComponentContext[RegistryT: "ComponentRegistry", ComponentT: "BaseComponen
         uri: str,
         component_type: type[ComponentT],
     ) -> ComponentUriProxy[ComponentT] | ComponentT:
-        if uri in self._all_resolved:
-            # TODO: check component_type,
-            # raise error when we're move this to errors module
-            return self._all_resolved[uri]
+        component = self._resolved_with_parents.get(uri)
+        if component:
+            if not issubclass(type(component), component_type):
+                raise ComponentTypeError(
+                    uri,
+                    "Component previously resolved type and expected type mismatch",
+                    type(component),
+                    component_type,
+                )
+            return component
         if uri not in self._unresolved:
             self._unresolved[uri] = ComponentUriProxy[ComponentT](uri, component_type)
         return self._unresolved[uri]
 
-    def _load_component(self, data: object) -> ComponentT:
+    def _load(self, data: object) -> ComponentT:
         component = self._registry.provides_type_adapter.validate_python(
             data,
-            context=self.full_validation_context,
+            context=self._full_validation_context,
         )
-        if component.uri in self._all_resolved:
-            return self._all_resolved[component.uri]
+        if component.uri in self._resolved_with_parents:
+            return self._resolved_with_parents[component.uri]
         self._resolved[component.uri] = component
         return component
 
-    async def _resolve_uri(self, uri: str) -> None:
+    async def _resolve_proxy(self, uri: str) -> None:
         proxy = self._unresolved[uri]
         component = await self._registry.get(
             uri,
-            context=self.full_validation_context,
+            context=self._full_validation_context,
         )
         proxy._resolve(component)  # noqa: SLF001
         self._resolved[uri] = component
         del self._unresolved[uri]
 
     @property
-    def full_validation_context(self) -> "ValidationContext":
+    def _full_validation_context(self) -> "ValidationContext":
         return {**self._validation_context, "component_context": self}
 
     async def __aenter__(self) -> Self:
-        await self._resolve()
+        await self._resolve_all()
         return self
 
     async def __aexit__(self, *exc_args: object) -> bool | None:
@@ -140,29 +153,29 @@ class ComponentContext[RegistryT: "ComponentRegistry", ComponentT: "BaseComponen
             if aexit:
                 await aexit(*exc_args)
 
-    async def _resolve(self) -> None:
+    async def _resolve_all(self) -> None:
         recursion_guard = RecursionGuard("Component resolution recursion exceeded", 10)
         while self._unresolved:
             recursion_guard.increment()
             for uri in self._unresolved.copy():
-                await self._resolve_uri(uri)
+                await self._resolve_proxy(uri)
 
     async def resolve(
         self,
         uri_or_data: object,
     ) -> ComponentT:
         if isinstance(uri_or_data, str):
-            if uri_or_data in self._all_resolved:
-                return self._all_resolved[uri_or_data]
-
+            component = self._resolved_with_parents.get(uri_or_data)
+            if component:
+                return component
             component = await self._registry.get(
                 uri_or_data,
-                context=self.full_validation_context,
+                context=self._full_validation_context,
             )
         else:
-            component = self._load_component(uri_or_data)
+            component = self._load(uri_or_data)
 
-        await self._resolve()
+        await self._resolve_all()
         return component
 
     def create_context(
@@ -214,7 +227,7 @@ class ComponentUri:
                     value,
                     source_type,
                 )
-            raise RuntimeError("ComponentResolutionContext not provided")
+            raise ComponentRuntimeError("ComponentContext not provided")
             # return ComponentUriProxy(value)
             #
 

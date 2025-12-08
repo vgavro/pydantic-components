@@ -6,6 +6,7 @@ from pydantic import TypeAdapter
 from pydantic._internal import _generics as pydantic_generics
 
 from .component import BaseComponent
+from .exceptions import ComponentNotFoundError
 
 if TYPE_CHECKING:
     from .resolver import ComponentContext
@@ -13,9 +14,6 @@ if TYPE_CHECKING:
 
 class ValidationContext(TypedDict, total=False):
     component_context: NotRequired["ComponentContext"]
-
-
-class ComponentNotFoundError(Exception): ...
 
 
 class BaseProvider[ComponentT: BaseComponent](BaseComponent, frozen=True):
@@ -60,7 +58,7 @@ class BaseProvider[ComponentT: BaseComponent](BaseComponent, frozen=True):
             assert hasattr(component, "uri")
             if component.uri == uri:
                 return component
-        raise ComponentNotFoundError(f"Component not found {uri}")
+        raise ComponentNotFoundError(uri, "Component not found")
 
     async def list(
         self,

@@ -3,6 +3,7 @@ from typing import Annotated, Any, cast
 import pytest
 from pydantic import BaseModel, Field
 
+from pydantic_components.exceptions import ComponentRuntimeError
 from pydantic_components.registry import (
     BaseComponent,
     BaseProvider,
@@ -11,7 +12,6 @@ from pydantic_components.registry import (
 from pydantic_components.resolver import (
     ComponentUri,
     ComponentUriProxy,
-    NotResolvedError,
 )
 
 # TODO: there is too much copy-paste code in tests,
@@ -40,7 +40,7 @@ def test_component_uri() -> None:
     assert m2.component.uri == "component://foo"
 
     # Using it before resolution raises
-    with pytest.raises(NotResolvedError):
+    with pytest.raises(ComponentRuntimeError):
         _ = m2.component.x
 
     # Later, your own code can resolve it
@@ -70,7 +70,7 @@ def test_component_serialize() -> None:
     assert m2.component.uri == "component://foo"
 
     # Using it before resolution raises
-    with pytest.raises(NotResolvedError):
+    with pytest.raises(ComponentRuntimeError):
         _ = m2.component.x
 
     # Later, your own code can resolve it
@@ -123,7 +123,6 @@ async def test_registry() -> None:
 
     registry = ComponentRegistry[Test1Provider | Test2Provider](
         components=[Test1Provider(), Test2Provider()],
-        validation_context={},
     )
     await registry.__aenter__()
     test2_component = cast(
@@ -183,7 +182,6 @@ async def test_wrong_type_resolved() -> None:
         Test1Provider | Test2Provider | Test1Component | Test2Component
     ](
         components=[Test1Provider(), Test2Provider()],
-        validation_context={},
     )
     await registry.__aenter__()
     with pytest.raises(TypeError):

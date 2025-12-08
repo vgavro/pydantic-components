@@ -5,6 +5,7 @@ from typing import Any, Self, cast
 from pydantic import Field, PrivateAttr
 
 from .component import BaseComponent
+from .exceptions import ComponentNotFoundError
 from .provider import BaseProvider, ValidationContext
 from .resolver import ComponentContext
 from .utils import RecursionGuard
@@ -16,9 +17,9 @@ class ComponentRegistry[ComponentT: BaseComponent](
     BaseProvider[ComponentT],
     frozen=True,
 ):
-    components: list[ComponentT] = Field([])
-    validation_context: Mapping[str, Any] = Field({})
-    _providers: list[BaseProvider[ComponentT]] = PrivateAttr([])
+    components: list[ComponentT] = Field(default=[])
+    validation_context: Mapping[str, Any] = Field(default={})
+    _providers: list[BaseProvider[ComponentT]] = PrivateAttr(default=[])
 
     @cached_property
     def root_context(self) -> ComponentContext[Self, ComponentT]:
@@ -30,7 +31,7 @@ class ComponentRegistry[ComponentT: BaseComponent](
 
     async def __aenter__(self) -> Self:
         for component in self.components:
-            self.root_context._load_component(component)  # noqa: SLF001
+            self.root_context._load(component)  # noqa: SLF001
         await self.root_context.__aenter__()
         for component in self.components:
             if isinstance(component, BaseProvider):
@@ -48,6 +49,8 @@ class ComponentRegistry[ComponentT: BaseComponent](
             5,
         )
         _recursion_guard.increment()
+
+        await self.root_context._resolve_all()  # noqa: SLF001
         await provider.__aenter__()
         if issubclass(provider.provides_type, BaseProvider):
             async for sub_provider in provider.list():
@@ -73,10 +76,6 @@ class ComponentRegistry[ComponentT: BaseComponent](
         uri: str,
         context: ValidationContext | None = None,
     ) -> ComponentT:
-        # TODO: provider resolution
-        # if self.provides_uri(uri):
-        #     return await self.get(uri, context)
-
         if uri in self.root_context._resolved:  # noqa: SLF001
             return self.root_context._resolved[uri]  # noqa: SLF001
 
@@ -84,4 +83,4 @@ class ComponentRegistry[ComponentT: BaseComponent](
             if provider.provides_uri(uri):
                 return await provider.get(uri, context)
 
-        raise RuntimeError("Provider not registered for URI", uri)
+        raise ComponentNotFoundError(uri, "No providers found")
